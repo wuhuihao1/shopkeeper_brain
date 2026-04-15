@@ -1,0 +1,15 @@
+# .gitignore 文件内容
+
+# Python 虚拟环境
+knowledge/.venv/
+knowledge/temp_data/
+.venv/
+venv/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# IDE 配置
+.vscode/
+.idea/
