@@ -14,6 +14,7 @@ from knowledge.processor.query_processor.nodes.web_mcp_search_node import WebMcp
 from knowledge.processor.query_processor.nodes.rrf_merge_node import RrfMergeNode
 from knowledge.processor.query_processor.nodes.reranker_node import RerankerNode
 from knowledge.processor.query_processor.nodes.answer_output_node import AnswerOutPutNode
+from knowledge.processor.query_processor.nodes.evaluation_node import EvaluationNode
 
 # 加载环境变量
 load_dotenv()
@@ -33,6 +34,22 @@ def route_after_item_confirm(state: QueryGraphState) -> bool:
     if state.get("answer"):
         return True
     return False
+
+
+def route_after_answer(state: QueryGraphState) -> str:
+    """答案输出后的路由逻辑。
+
+    根据 enable_evaluation 决定是否进入 RAGAS 评估节点。
+
+    Args:
+        state: 查询图状态。
+
+    Returns:
+        "evaluation_node" 或 "END"。
+    """
+    if state.get("enable_evaluation"):
+        return "evaluation_node"
+    return "END"
 
 
 def create_query_graph() -> CompiledStateGraph:
@@ -71,8 +88,9 @@ def create_query_graph() -> CompiledStateGraph:
                    v                                       │
              answer_output <───────────────────────────────┘
                    │
-                   v
-                  END
+                   ├── (enable_evaluation=True) ──> evaluation_node ──> END
+                   │
+                   └── (enable_evaluation=False) ──────────> END
     """
 
     # 1. 定义LangGraph工作流
@@ -89,6 +107,7 @@ def create_query_graph() -> CompiledStateGraph:
         "rrf_merge_node": RrfMergeNode(),
         "reranker_node": RerankerNode(),
         "answer_output_node": AnswerOutPutNode(),
+        "evaluation_node": EvaluationNode(),  # RAGAS 评估节点
     }
 
     # 3. 添加节点
@@ -122,9 +141,21 @@ def create_query_graph() -> CompiledStateGraph:
     workflow.add_edge("join", "rrf_merge_node")
     workflow.add_edge("rrf_merge_node", "reranker_node")
     workflow.add_edge("reranker_node", "answer_output_node")
-    workflow.add_edge("answer_output_node", END)
 
-    # 9. 返回可运行的状态
+    # 9. 答案输出后条件路由：根据 enable_evaluation 决定是否进入评估节点
+    workflow.add_conditional_edges(
+        "answer_output_node",
+        route_after_answer,
+        {
+            "evaluation_node": "evaluation_node",
+            "END": END,
+        },
+    )
+
+    # 10. 评估节点结束后到终点
+    workflow.add_edge("evaluation_node", END)
+
+    # 11. 返回可运行的状态
     return workflow.compile()
 
 

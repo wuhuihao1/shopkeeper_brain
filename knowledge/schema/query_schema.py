@@ -8,12 +8,16 @@ class QueryRequest(BaseModel):
     query: str = Field(..., description="查询内容")
     session_id: Optional[str] = Field(None, description="会话ID，不传则自动生成")
     is_stream: bool = Field(False, description="是否流式返回")
+    # RAGAS 评估参数
+    enable_evaluation: bool = Field(True, description="是否开启 RAGAS 评估")
+    ground_truth: Optional[str] = Field(None, description="标准答案（可选，用于 Context Precision/Recall 指标）")
 
 
 class QueryResponse(BaseModel):
     message: str = Field(..., description="响应消息")
     session_id: str = Field(..., description="会话ID")
     answer: str = Field("", description="生成的答案")
+    evaluation_result: Optional[dict] = Field(None, description="RAGAS 评估结果（仅 enable_evaluation=True 时返回）")
 
 
 class StreamSubmitResponse(BaseModel):

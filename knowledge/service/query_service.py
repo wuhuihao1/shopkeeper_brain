@@ -23,7 +23,8 @@ class QueryService:
         """生成task_id"""
         return str(uuid.uuid4().hex[:12])
 
-    def run_query_graph(self, session_id: str, task_id: str, query: str, is_stream: bool):
+    def run_query_graph(self, session_id: str, task_id: str, query: str, is_stream: bool,
+                        enable_evaluation: bool = False, ground_truth: str = ""):
         """
         运行查询流程的pineline
         Args:
@@ -31,6 +32,8 @@ class QueryService:
             task_id:     任务id
             query:       查询问题
             is_stream:   是否是流式
+            enable_evaluation: 是否开启 RAGAS 评估
+            ground_truth: 可选标准答案（用于 Context Precision/Recall 指标）
         """
         #更新节点流程
         update_task_status(task_id=task_id, status_name=TASK_STATUS_PROCESSING)
@@ -39,7 +42,9 @@ class QueryService:
             "session_id": session_id,
             "task_id": task_id,
             "original_query": query,
-            "is_stream": is_stream
+            "is_stream": is_stream,
+            "enable_evaluation": enable_evaluation,
+            "ground_truth": ground_truth,
         }
         try:
             query_app.invoke(query_init_state)

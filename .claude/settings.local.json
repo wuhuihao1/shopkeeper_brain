@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(python -c \"import ragas; print\\('ragas:', ragas.__version__\\)\")",
+      "Bash(python -c \"import langchain_openai; print\\('langchain_openai:', langchain_openai.__version__\\)\")",
+      "Bash(python -c \"import langchain_core; print\\('langchain_core:', langchain_core.__version__\\)\")",
+      "Bash(pip list:*)",
+      "Bash(W:/anaconda/python.exe -c \"import ragas; print\\('ragas:', ragas.__version__\\)\")",
+      "Bash(W:/anaconda/python.exe -c \"import langchain_openai; print\\('langchain_openai:', langchain_openai.__version__\\)\")",
+      "Bash(W:/anaconda/python.exe -c \"import langchain_core; print\\('langchain_core:', langchain_core.__version__\\)\")"
+    ]
+  }
+}

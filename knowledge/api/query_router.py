@@ -1,8 +1,9 @@
 import asyncio
-
-import uvicorn, os
+import json
+import uvicorn
+import os
 from typing import Union
-from fastapi import FastAPI, UploadFile, Depends, BackgroundTasks, Request,HTTPException
+from fastapi import FastAPI, UploadFile, Depends, BackgroundTasks, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,7 @@ from knowledge.schema.query_schema import QueryRequest, StreamSubmitResponse, Qu
 from knowledge.core.deps import get_query_service
 from knowledge.service.query_service import QueryService
 from knowledge.utils.sse_util import create_sse_queue, sse_generator
+from knowledge.utils.task_util import get_task_result
 
 
 def create_app():
@@ -30,36 +32,52 @@ def create_app():
 
     return app
 
-def register_router(app: FastAPI):
 
+def register_router(app: FastAPI):
     @app.get('/')
     def hello_world():
         return {"flag": "success"}
 
     @app.post('/query')
-    async def query_endpoint(request: QueryRequest, background_tasks: BackgroundTasks, service: QueryService = Depends(get_query_service)) -> Union[StreamSubmitResponse, QueryResponse]:
+    async def query_endpoint(
+            request: QueryRequest,
+            background_tasks: BackgroundTasks,
+            service: QueryService = Depends(get_query_service)
+    ) -> Union[StreamSubmitResponse, QueryResponse]:
         """
         处理查询请求
         Args:
-            query: 前端请求参数对象
+            request: 前端请求参数对象
             background_tasks: 后台任务对象
             service: 查询业务组件对象
         Returns:
             流式返回或者正常返回值对象
         """
         session_id = request.session_id or service.generate_session_id()
-
         task_id = service.generate_task_id()
         print(request.is_stream)
-        #流式调用
+
+        # 流式调用
         if request.is_stream:
-            #生成sse队列
+            # 生成sse队列
             create_sse_queue(task_id)
-            #定义后台任务
-            background_tasks.add_task(service.run_query_graph, task_id=task_id, session_id=session_id, query=request.query, is_stream=True)
-            return StreamSubmitResponse(message='查询请求已经提交', session_id=session_id, task_id=task_id)
+            # 定义后台任务
+            background_tasks.add_task(
+                service.run_query_graph,
+                task_id=task_id,
+                session_id=session_id,
+                query=request.query,
+                is_stream=True,
+                enable_evaluation=request.enable_evaluation,
+                ground_truth=request.ground_truth or "",
+            )
+            return StreamSubmitResponse(
+                message='查询请求已经提交',
+                session_id=session_id,
+                task_id=task_id
+            )
         else:
-            #同步调用,使用asyncio的event_loop阻塞当前线程
+            # 同步调用，使用asyncio的event_loop阻塞当前线程
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
@@ -67,11 +85,29 @@ def register_router(app: FastAPI):
                 session_id,
                 task_id,
                 request.query,
-                request.is_stream
+                request.is_stream,
+                request.enable_evaluation,
+                request.ground_truth or "",
             )
-            #执行完成后获取answer
+            # 执行完成后获取answer
             answer = service.get_task_result(task_id)
-            return QueryResponse(message='查询请求已经处理完了', session_id=session_id, answer=answer)
+            # 如果开启了评估，获取评估结果
+            evaluation_result = None
+            if request.enable_evaluation:
+                evaluation_result = get_task_result(task_id, key="evaluation")
+                # 将 JSON 字符串解析为字典
+                if isinstance(evaluation_result, str):
+                    try:
+                        evaluation_result = json.loads(evaluation_result)
+                    except json.JSONDecodeError:
+                        evaluation_result = None
+
+            return QueryResponse(
+                message='查询请求已经处理完了',
+                session_id=session_id,
+                answer=answer,
+                evaluation_result=evaluation_result,
+            )
 
     @app.get("/stream/{task_id}")
     async def stream(task_id: str, request: Request) -> StreamingResponse:
@@ -85,11 +121,15 @@ def register_router(app: FastAPI):
         Returns:
             StreamingResponse: 将后端组合的sse协议格式的数据 返回给前端
         """
-        return StreamingResponse(content=sse_generator(task_id, request), media_type="text/event-stream")
+        return StreamingResponse(
+            content=sse_generator(task_id, request),
+            media_type="text/event-stream"
+        )
 
     @app.get("/history/{session_id}")
     async def get_history(
-            session_id: str, limit: int = 50,
+            session_id: str,
+            limit: int = 50,
             service: QueryService = Depends(get_query_service),
     ):
         try:
@@ -120,6 +160,7 @@ def register_router(app: FastAPI):
     ):
         count = service.delete_session(session_id)
         return {"message": "Session deleted", "deleted_count": count}
+
 
 if __name__ == '__main__':
     uvicorn.run(create_app(), host="0.0.0.0", port=8001)

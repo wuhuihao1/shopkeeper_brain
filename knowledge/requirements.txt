@@ -7,3 +7,4 @@ sentence-transformers    # 句向量模型
 pymongo                  # MongoDB 驱动
 mineru[all]              # PDF 解析工具
 openai-agents            # OpenAI Agent 框架
+ragas                    # RAG 评估框架

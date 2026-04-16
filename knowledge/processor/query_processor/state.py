@@ -28,6 +28,10 @@ class QueryGraphState(TypedDict):
     rewritten_query: str  #重写答案
     history: list   # 历史对话
     is_stream: bool # 是否流式输出
+    # RAGAS 评估相关字段
+    enable_evaluation: bool  # 是否开启 RAGAS 评估
+    ground_truth: str  # 可选的标准答案（用于 Context Precision/Recall）
+    evaluation_result: dict  # RAGAS 评估结果
 
 
 # ==================== 默认状态 ====================
@@ -48,6 +52,9 @@ DEFAULT_STATE: QueryGraphState = {
     "rewritten_query": "",          # 重写查询
     "history": [],                  # 历史对话
     "is_stream": False,             # 是否流式输出 (默认设为 False)
+    "enable_evaluation": False,     # 是否开启 RAGAS 评估
+    "ground_truth": "",             # 可选标准答案
+    "evaluation_result": {},        # RAGAS 评估结果
 }
 
 def create_default_state(**overrides) -> QueryGraphState:
