@@ -384,7 +384,6 @@ if __name__ == '__main__':
         # "original_query": "RS-12数字万用表如何测量电压"  # 单个商品询问
     }
     llm_result = item_name_confirmed_node.process(init_state)
-
     print(llm_result)
 
 

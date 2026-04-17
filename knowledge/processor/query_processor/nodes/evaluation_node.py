@@ -44,13 +44,29 @@ class EvaluationNode(BaseNode):
             return state
 
         # ---------- 2. 清洗和验证 contexts ----------
+        # 确保问题、答案是纯字符串（防止 list/dict 等类型混入）
+        if not isinstance(question, str):
+            question = str(question) if question is not None else ''
+        if not isinstance(answer, str):
+            answer = str(answer) if answer is not None else ''
+
         clean_contexts = []
         for doc in reranked_docs:
-            content = doc.get('content', '')
+            # doc 可能是 dict 或其他对象
+            if isinstance(doc, dict):
+                content = doc.get('content', '')
+            elif isinstance(doc, str):
+                content = doc
+            else:
+                content = getattr(doc, 'content', '') or getattr(doc, 'page_content', '') or ''
+            # 确保每个 context 元素是 str
             if content and isinstance(content, str):
                 clean_contexts.append(content)
+            elif content is not None:
+                self.logger.debug(f'转换非字符串上下文: {type(content)}')
+                clean_contexts.append(str(content))
             else:
-                self.logger.debug(f'跳过无效上下文: {type(content)}')
+                self.logger.debug(f'跳过空上下文')
 
         # Ragas 要求 contexts 不能为空，也不能包含非字符串
         if not clean_contexts:
@@ -86,10 +102,7 @@ class EvaluationNode(BaseNode):
             dataset = EvaluationDataset(samples=[sample])
 
         # ---------- 4. 选择评估指标 ----------
-        # 【强制修复】AnswerRelevancy 与 DashScope API 不兼容，直接禁用
-        # 只使用 Faithfulness 指标
-        self.logger.info('使用 Faithfulness 指标进行评估（AnswerRelevancy 已禁用，与 DashScope API 不兼容）')
-        metrics = [Faithfulness()]
+        metrics = [Faithfulness(), AnswerRelevancy()]
 
         # 当提供标准答案时，额外计算 ContextPrecision 和 ContextRecall
         if ground_truth_str:
@@ -100,7 +113,7 @@ class EvaluationNode(BaseNode):
         metric_names = [getattr(m, 'name', str(m)) for m in metrics]
         self.logger.info(f'使用的评估指标: {metric_names}')
 
-        # ---------- 5. 创建评估用 LLM（不需要 Embeddings）----------
+        # ---------- 5. 创建评估用 LLM 和 Embeddings ----------
         evaluator_llm = ChatOpenAI(
             model_name=os.getenv('LLM_DEFAULT_MODEL', 'qwen-flash'),
             openai_api_key=os.getenv('OPENAI_API_KEY'),
@@ -108,8 +121,12 @@ class EvaluationNode(BaseNode):
             temperature=0,
         )
 
-        # AnswerRelevancy 已禁用，不需要创建 Embeddings
-        evaluator_embeddings = None
+        # AnswerRelevancy 需要 Embeddings 来计算语义相似度
+        evaluator_embeddings = OpenAIEmbeddings(
+            model=os.getenv('EMBEDDING_MODEL', 'text-embedding-v3'),
+            openai_api_key=os.getenv('OPENAI_API_KEY'),
+            openai_api_base=os.getenv('OPENAI_API_BASE'),
+        )
 
         # ---------- 6. 运行评估（兼容 RAGAS 同步/异步 API） ----------
         try:
