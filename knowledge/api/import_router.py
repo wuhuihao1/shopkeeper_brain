@@ -6,8 +6,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from knowledge.core.paths import get_front_page_dir
-from knowledge.schema.upload_schema import UploadResponse,TaskStatusResponse
-from knowledge.service.upload_service import UpLoadService
+from knowledge.schema.import_schema import UploadResponse,TaskStatusResponse
+from knowledge.service.import_service import UpLoadService
 from knowledge.core.deps import get_upload_file_service
 from knowledge.utils.task_util import get_task_info
 
@@ -17,7 +17,7 @@ from knowledge.utils.task_util import get_task_info
 # 3. 利用uvicorn服务器启动fastapi
 
 def create_app():
-    app = FastAPI(description='掌柜智库导入应用', version='v1.0')
+    app = FastAPI(description='听书知识库查询导入应用', version='v1.0')
     #配置跨域
     app.add_middleware(
         CORSMiddleware,

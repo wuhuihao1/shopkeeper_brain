@@ -1,5 +1,6 @@
 import threading
 from typing import Optional
+from pathlib import Path
 from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI
@@ -8,7 +9,9 @@ from pymilvus.model.hybrid import BGEM3EmbeddingFunction
 from FlagEmbedding import FlagReranker
 from knowledge.utils.client.base import BaseClientManager, logger
 
-load_dotenv()
+# 显式指定 .env 路径，避免加载到其他项目的配置
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+load_dotenv(_env_path, override=True)
 
 
 class AIClients(BaseClientManager):

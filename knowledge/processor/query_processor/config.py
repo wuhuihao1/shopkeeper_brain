@@ -5,10 +5,13 @@
 
 from dataclasses import dataclass, field
 from typing import Optional
+from pathlib import Path
 import os
 
 from dotenv import load_dotenv
-load_dotenv()
+# 显式指定 .env 路径，避免加载到其他项目的配置
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+load_dotenv(_env_path, override=True)
 
 
 @dataclass
@@ -51,16 +54,16 @@ class QueryConfig:
     )
 
     # ==================== 商品确认节点配置 ====================
-    item_name_high_confidence: float = field(
+    book_name_high_confidence: float = field(
         default_factory=lambda: float(os.getenv("ITEM_NAME_HIGH_CONFIDENCE", "0.7"))
     )
-    item_name_mid_confidence: float = field(
+    book_name_mid_confidence: float = field(
         default_factory=lambda: float(os.getenv("ITEM_NAME_MID_CONFIDENCE", "0.45"))
     )
-    item_name_score_gap: float = field(
+    book_name_score_gap: float = field(
         default_factory=lambda: float(os.getenv("ITEM_NAME_SCORE_GAP", "0.15"))
     )
-    item_name_max_options: int = field(
+    book_name_max_options: int = field(
         default_factory=lambda: int(os.getenv("ITEM_NAME_MAX_OPTIONS", "3"))
     )
     item_name_dense_weight: float = field(
@@ -91,7 +94,7 @@ class QueryConfig:
     chunks_collection: str = field(
         default_factory=lambda: os.getenv("CHUNKS_COLLECTION", "")
     )
-    item_name_collection: str = field(
+    book_name_collection: str = field(
         default_factory=lambda: os.getenv("ITEM_NAME_COLLECTION", "")
     )
     entity_name_collection: str = field(

@@ -6,10 +6,13 @@
 
 from dataclasses import dataclass, field
 from typing import Set, Optional
+from pathlib import Path
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# 显式指定 .env 路径，避免加载到其他项目的配置
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+load_dotenv(_env_path, override=True)
 
 
 @dataclass

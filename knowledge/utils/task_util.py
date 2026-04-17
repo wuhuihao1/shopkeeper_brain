@@ -27,7 +27,7 @@ _NODE_NAME_TO_CN: Dict[str, str] = {
     "md_to_img_node": "Markdown图片处理",
     "document_split_node": "文档切分",
     "item_name_recognition_node": "主体名称识别",
-    "embedding_chunk_node": "向量生成",
+    "embedding_chunks_node": "向量生成",
     "import_milvus_node": "导入向量数据库",
     "__end__": "处理完成",
     "item_name_confirmed_node": "确认问题产品",
@@ -36,7 +36,11 @@ _NODE_NAME_TO_CN: Dict[str, str] = {
     "rrf_merge_node": "倒排融合",
     "web_mcp_search_node": "网络搜索",
     "hybrid_vector_search_node": "切片搜索",
-    "hyde_vector_search_node": "切片搜索(假设性文档)"
+    "hyde_vector_search_node": "切片搜索(假设性文档)",
+    "intent_router_node": "意图判断",
+    "metadata_filter_node": "元数据过滤",
+    "book_name_recognition_node": "书本名提取",
+    "book_name_confirmed_node": "书本名确认"
 }
 
 

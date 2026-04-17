@@ -6,11 +6,10 @@ from langgraph.graph import END
 from knowledge.processor.import_processor.base import setup_logging
 from knowledge.processor.import_processor.nodes.pdf_to_md_node import PdfToMdNode
 from knowledge.processor.import_processor.nodes.entry_node import EntryNode
-from knowledge.processor.import_processor.nodes.md_to_img_node import MarkDownToImgNode
 from knowledge.processor.import_processor.nodes.document_split_node import DocumentSplitNode
 from knowledge.processor.import_processor.nodes.embedding_chunks_node import EmbeddingChunksNode
 from knowledge.processor.import_processor.nodes.import_milvus_node import ImportMilvusNode
-from knowledge.processor.import_processor.nodes.item_name_recognition_node import ItemNameRecognitionNode
+from knowledge.processor.import_processor.nodes.book_name_recognition_node import BookNameRecognitionNode
 from knowledge.processor.import_processor.state import ImportGraphState
 
 """
@@ -34,7 +33,7 @@ def import_router(state: ImportGraphState):
     if state.get('is_pdf_read_enabled'):
         return 'pdf_to_md_node'
     elif state.get('is_md_read_enabled'):
-        return 'md_to_img_node'
+        return 'document_split_node'
     else:
         return END
 
@@ -54,11 +53,10 @@ def import_graph() -> CompiledStateGraph:
     workflow.set_entry_point('entry_node')
     # 3. 定义其它节点名和节点实例的映射表
     node_name_obj={
-        'md_to_img_node': MarkDownToImgNode(),
         'pdf_to_md_node': PdfToMdNode(),
         'entry_node': EntryNode(),
         'document_split_node': DocumentSplitNode(),
-        'item_name_recognition_node': ItemNameRecognitionNode(),
+        'item_name_recognition_node': BookNameRecognitionNode(),
         'embedding_chunks_node': EmbeddingChunksNode(),
         "import_milvus_node": ImportMilvusNode(),
     }
@@ -68,13 +66,11 @@ def import_graph() -> CompiledStateGraph:
     # 5. 定义条件边
     #左边的是import_router返回值,右边的是具体的节点名
     workflow.add_conditional_edges('entry_node', import_router, {
-        'md_to_img_node': 'md_to_img_node',
+        'document_split_node': 'document_split_node',
         'pdf_to_md_node': 'pdf_to_md_node',
         END: END
     })
     # 5.2 定义业务边
-    workflow.add_edge('pdf_to_md_node', 'md_to_img_node')
-    workflow.add_edge('md_to_img_node', 'document_split_node')
     workflow.add_edge('document_split_node', 'item_name_recognition_node')
     workflow.add_edge('item_name_recognition_node', 'embedding_chunks_node')
     workflow.add_edge('embedding_chunks_node', 'import_milvus_node')
@@ -93,7 +89,7 @@ def run_import_graph():
     # 1. 定义运行graph流程的状态
 
     graph_state = {
-        "import_file_path": r"W:\test\PythonProject\shopkeeper_brain\knowledge\processor\import_processor\temp_dir\万用表RS-12的使用_origin.pdf",
+        "import_file_path": r"W:\test\PythonProject\smart_audiobook\docs\活着简介.md",
         "file_dir": r"W:\test\PythonProject\shopkeeper_brain\knowledge\processor\import_processor\temp_dir"
 
     }

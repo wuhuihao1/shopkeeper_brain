@@ -1,6 +1,7 @@
 import threading
 from typing import Optional
 from typing import TypeVar, Optional
+from pathlib import Path
 import logging
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,9 @@ from dotenv import load_dotenv
 from knowledge.utils.client.base import BaseClientManager
 from pymongo.database import Database
 
-load_dotenv()
+# 显式指定 .env 路径，避免加载到其他项目的配置
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+load_dotenv(_env_path, override=True)
 
 
 class StorageClients(BaseClientManager):

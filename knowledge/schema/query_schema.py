@@ -1,4 +1,4 @@
-"""查询相关 Schema 定义"""
+"""查询相关 Schema 定义（听书平台版本）"""
 
 from typing import Optional, List
 from pydantic import BaseModel, Field
@@ -9,7 +9,7 @@ class QueryRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="会话ID，不传则自动生成")
     is_stream: bool = Field(False, description="是否流式返回")
     # RAGAS 评估参数
-    enable_evaluation: bool = Field(True, description="是否开启 RAGAS 评估")
+    enable_evaluation: bool = Field(False, description="是否开启 RAGAS 评估")
     ground_truth: Optional[str] = Field(None, description="标准答案（可选，用于 Context Precision/Recall 指标）")
 
 
@@ -32,7 +32,8 @@ class HistoryItem(BaseModel):
     role: str = ""
     text: str = ""
     rewritten_query: str = ""
-    item_names: List[str] = Field(default=list)
+    book_names: List[str] = Field(default=list)  # 改为 book_names
+    intent: str = Field(default="")              # 新增意图字段
     ts: Optional[float] = None
 
 

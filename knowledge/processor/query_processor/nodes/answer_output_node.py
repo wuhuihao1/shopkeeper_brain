@@ -1,39 +1,46 @@
 from typing import List, Dict, Any, Tuple
 from langchain_openai import ChatOpenAI
-from knowledge.processor.query_processor.base import BaseNode, T
+from knowledge.processor.query_processor.base import BaseNode
 from knowledge.processor.query_processor.state import QueryGraphState
 from knowledge.utils.client.ai_clients import AIClients
 from knowledge.utils.mongo_history_util import save_chat_message
 from knowledge.utils.task_util import set_task_result
 from knowledge.utils.sse_util import push_sse_event, SSEEvent
-from knowledge.prompts.query_prompt import ANSWER_PROMPT
+from knowledge.prompts.query_prompt import ANSWER_PROMPT_BOOK
+
 
 class AnswerOutPutNode(BaseNode):
-    name='answer_output_node'
-    def process(self, state: QueryGraphState) -> QueryGraphState:
-        """
-        核心逻辑:
-        1. 从state中获取answer->没有进行三路检索, 不用在生成答案，直接返回.如何推送给前端:1.流式（直接将已经生成的内容都给前端）2.非流式（直接将已经生成的内容都给前端）
-        2. 如果没有获取answer->进行了三路检索,需要llm生成答案再返回.如何推送给前端:1.流式（sse）2.非流式（明显变化）
-        """
-        # 获取数据
-        is_stream = state['is_stream']
-        task_id = state['task_id']
+    """
+    答案输出节点（听书平台版本）
+    1. 如果有预置答案（如书名无法确认），直接返回
+    2. 否则基于重排序后的文档生成答案
+    3. 支持流式和非流式输出
+    4. 保存对话历史到MongoDB
+    """
+    name = 'answer_output_node'
 
-        #判断是否有答案
+    def process(self, state: QueryGraphState) -> QueryGraphState:
+        # 获取配置
+        is_stream = state.get('is_stream', False)
+        task_id = state.get('task_id', '')
+
+        # 判断是否有预置答案
         if state.get('answer'):
-            #有答案说明三路检索未成功或未确认,直接推给前端
-            self._push_exist_answer(task_id, is_stream, state)
+            # 有预置答案（如书名无法确认），直接返回
+            self._push_existing_answer(task_id, is_stream, state)
             is_streamed = False
         else:
+            # 构建Prompt并生成答案
             prompt = self._build_prompt(state)
             state['prompt'] = prompt
-            #通过llm生成答案
-            self._generate_answer(prompt, task_id, state)
+            self._generate_answer(prompt, task_id, state, is_stream)
             is_streamed = is_stream
-        self.save_history(state)
+
+        # 保存对话历史
+        self._save_history(state)
+
+        # 推送最终完成事件
         if is_stream:
-            #已经流式调用把数据传到前端了,就不在给数据
             if is_streamed:
                 push_sse_event(
                     task_id=task_id,
@@ -44,192 +51,325 @@ class AnswerOutPutNode(BaseNode):
                 push_sse_event(
                     task_id=task_id,
                     event=SSEEvent.FINAL,
-                    data={'answer': state.get('answer')}
+                    data={'answer': state.get('answer', '')}
                 )
+
         return state
 
-    def save_history(self, state: QueryGraphState):
+    def _save_history(self, state: QueryGraphState) -> None:
         """
-        保存历史对话（Q--->A）
-        存储位置：mongodb对应kb001库下的chat_message表中
+        保存历史对话到MongoDB
         """
         try:
-            session_id = state['session_id']
-            user_query = state['original_query']
-            rewritten_query = state['rewritten_query']
-            item_names = state['item_names'] or []
+            session_id = state.get('session_id', '')
+            original_query = state.get('original_query', '')
+            rewritten_query = state.get('rewritten_query', '')
+            book_names = state.get('book_names', []) or []
+            answer = state.get('answer', '')
+
+            if not session_id:
+                self.logger.warning("session_id为空，跳过保存历史")
+                return
+
+            # 保存用户问题
             save_chat_message(
                 session_id=session_id,
                 role='user',
-                text=user_query,
+                text=original_query,
                 rewritten_query=rewritten_query,
-                item_names=item_names,
+                book_names=book_names,
             )
+
+            # 保存助手回答
             save_chat_message(
                 session_id=session_id,
                 role='assistant',
-                text=state.get('answer'),
+                text=answer,
                 rewritten_query=rewritten_query,
-                item_names=item_names,
+                book_names=book_names,
             )
+            self.logger.info(f"对话历史保存成功，session_id: {session_id}")
         except Exception as e:
-            self.logger.error(f"保存历史对话到MongDB中失败 原因:{str(e)}")
+            self.logger.error(f"保存历史对话到MongoDB失败: {str(e)}")
 
-
-    def _generate_answer(self,prompt: str,task_id: str,state: QueryGraphState):
+    def _generate_answer(self, prompt: str, task_id: str, state: QueryGraphState, is_stream: bool) -> None:
         """
-        调用LLM  生成答案 更新到state
+        调用LLM生成答案
+        Args:
+            prompt: 提示词
+            task_id: 任务ID
+            state: 状态对象
+            is_stream: 是否流式输出
         """
         try:
-            client = AIClients.get_llm_client(response_format=False)
+            llm_client = AIClients.get_llm_client(response_format=False)
         except ConnectionError as e:
-            self.logger.error(f'连接llm失败,原因{str(e)}')
-            state['answer'] = "LLM暂无法回答"
+            self.logger.error(f'连接LLM失败: {str(e)}')
+            state['answer'] = "抱歉，LLM服务暂时不可用，请稍后重试。"
             return
-        if state['is_stream']:
-            state['answer'] = self._stream_llm(task_id, prompt, client)
+
+        if is_stream:
+            state['answer'] = self._stream_llm(task_id, prompt, llm_client)
         else:
-            state['answer'] = self._invoke_llm(prompt, client)
-            # 写入到任务结果队列中(非流式调用)
+            state['answer'] = self._invoke_llm(prompt, llm_client)
+            # 非流式调用，写入任务结果队列
             set_task_result(task_id=task_id, key="answer", value=state['answer'])
 
-    def _invoke_llm(self,prompt, llm_client):
+    def _invoke_llm(self, prompt: str, llm_client: ChatOpenAI) -> str:
         """
-        非流式调用llm
+        非流式调用LLM
+        Args:
+            prompt: 提示词
+            llm_client: LLM客户端
+        Returns:
+            生成的答案
         """
         try:
-            llm_res = llm_client.invoke(prompt)
-            if not llm_res:
-                return 'LLM暂无法回答'
+            llm_response = llm_client.invoke(prompt)
+            if not llm_response:
+                return "抱歉，无法生成回答，请稍后重试。"
 
-            llm_content = getattr(llm_res, 'content', "") or ""
-            return llm_content
+            content = getattr(llm_response, 'content', '')
+            return content if content else "抱歉，无法生成回答，请稍后重试。"
         except Exception as e:
-            return 'LLM暂无法回答'
+            self.logger.error(f"LLM调用失败: {str(e)}")
+            return "抱歉，LLM服务暂时不可用，请稍后重试。"
 
     def _stream_llm(self, task_id, prompt, client):
         """
-        流式调用llm
+        流式调用LLM
         """
-        accelerate_delta = '' #全量数据缓存
+        accumulate_delta = ''
         try:
             for chunk in client.stream(prompt):
-                delta_text = getattr(chunk, 'content', "")  or ''
+                delta_text = getattr(chunk, 'content', "") or ''
                 if delta_text:
                     push_sse_event(
                         task_id=task_id,
                         event=SSEEvent.DELTA,
                         data={"delta": delta_text},
                     )
-                    accelerate_delta += delta_text
+                    accumulate_delta += delta_text
+
+            # 流式完成后，发送 FINAL 事件
+            push_sse_event(
+                task_id=task_id,
+                event=SSEEvent.FINAL,
+                data={"answer": accumulate_delta}
+            )
+
         except Exception as e:
-            return "LLM暂无法回答"
-        return accelerate_delta
+            self.logger.error(f"流式LLM调用失败: {str(e)}")
+            push_sse_event(
+                task_id=task_id,
+                event=SSEEvent.FINAL,
+                data={"error": str(e)}
+            )
+            return "抱歉，LLM服务暂时不可用，请稍后重试。"
+
+        return accumulate_delta
 
     def _build_prompt(self, state: QueryGraphState) -> str:
-        max_context_chars = self.config.max_context_chars
-        # 获取必要字段
-        user_query = state['rewritten_query']
-        item_name = state['item_names'] or []
-        # 构建检索上下文, 上下文长度优先给重排序的数据使用
-        retrieval_context = state['reranked_docs'] or []
-        formatted_context, usage_chars = self._format_retrieval_context(retrieval_context, max_context_chars)
-        # 构建历史上下文
-        chat_history_context = state.get('history') or [] #从内存获取历史对话
-        formatted_history = self._format_chat_history(chat_history_context, usage_chars)
+        """
+        构建LLM提示词
+        Args:
+            state: 状态对象
+        Returns:
+            格式化的提示词
+        """
+        max_context_chars = getattr(self.config, 'max_context_chars', 4000)
 
-        # 格式化提示词模版
-        return ANSWER_PROMPT.format(
-            context=formatted_context or "暂无检索到上下文",
-            history=formatted_history or "暂无历史上下文",
-            item_names=','.join(item_name),
+        # 获取必要字段
+        user_query = state.get('rewritten_query', '') or state.get('original_query', '')
+        book_names = state.get('book_names', []) or []
+        intent = state.get('intent', 'qa')
+
+        # 构建检索上下文
+        retrieval_context = state.get('reranked_docs', []) or []
+        formatted_context, remaining_chars = self._format_retrieval_context(
+            retrieval_context, max_context_chars
+        )
+
+        # 构建历史对话上下文
+        chat_history = state.get('history', []) or []
+        formatted_history = self._format_chat_history(chat_history, remaining_chars)
+
+        # 根据意图调整Prompt风格
+        intent_hint = self._get_intent_hint(intent)
+
+        # 格式化提示词
+        return ANSWER_PROMPT_BOOK.format(
+            intent_hint=intent_hint,
+            context=formatted_context or "暂无检索到相关内容",
+            history=formatted_history or "暂无历史对话",
+            book_names='、'.join(book_names) if book_names else "未指定",
             question=user_query,
         )
 
-    def _format_chat_history(self, chat_history_context: List[Dict[str, Any]], usage_chars: int) -> str:
+    def _get_intent_hint(self, intent: str) -> str:
         """
-        格式化历史上下文
+        根据意图类型返回提示
         Args:
-            chat_history_context: 历史上下文
-            usage_chars: 可用字符串长度
+            intent: 意图类型
+        Returns:
+            意图提示字符串
         """
+        hints = {
+            'recommend': '请根据检索到的内容，向用户推荐合适的书籍，说明推荐理由和适合人群。',
+            'detail': '请根据检索到的内容，详细介绍这本书的相关信息，包括内容简介、作者介绍等。',
+            'search': '请根据检索到的内容，返回用户查询的具体信息，并注明来源。',
+            'qa': '请根据检索到的内容，回答用户的问题。如果检索内容不足以回答，请如实告知。',
+            'chat': '请友好地回应用户的问候或感谢。',
+        }
+        return hints.get(intent, hints['qa'])
+
+    def _format_chat_history(self, chat_history: List[Dict[str, Any]], max_chars: int) -> str:
+        """
+        格式化历史对话上下文
+        Args:
+            chat_history: 历史对话列表
+            max_chars: 最大字符数
+        Returns:
+            格式化后的历史对话字符串
+        """
+        if not chat_history:
+            return ""
+
         formatted_lines = []
         used_chars = 0
         role_map = {"user": "用户", "assistant": "助手"}
-        for msg in chat_history_context:
-            role = msg['role']
-            text = msg['text']
+
+        # 从最新的对话开始，但保持顺序
+        for msg in chat_history:
+            role = msg.get('role', '')
+            text = msg.get('text', '')
             if not text or role not in role_map:
                 continue
-            formatted_line = f"{role_map[role]}: {text}"
-            seperator_usage = 1 if formatted_line else 0
-            total_length = seperator_usage + len(formatted_line)
 
-            #如果已使用上下文长度+当前行长度大于可用字符,则直接抛弃
-            if used_chars + total_length > usage_chars:
+            formatted_line = f"{role_map[role]}: {text}"
+            total_length = len(formatted_line) + 1  # +1 for newline
+
+            if used_chars + total_length > max_chars:
                 break
+
             formatted_lines.append(formatted_line)
             used_chars += total_length
+
         return '\n'.join(formatted_lines)
 
-    def _format_retrieval_context(self, retrieval_context: List[Dict[str, Any]], max_context_chars: int) -> Tuple[str, int]:
+    def _format_retrieval_context(self, retrieval_context: List[Dict[str, Any]],
+                                   max_chars: int) -> Tuple[str, int]:
         """
         格式化检索到的上下文
-        【自己拼接一些元数据：供LLM学习，回答答案更准确】
         Args:
-            retrieval_context: 检索到的上下文
-            max_context_chars: 最大上下文的长度
+            retrieval_context: 检索到的文档列表
+            max_chars: 最大字符数
         Returns:
-            格式后的上下文
+            (格式化后的上下文, 剩余可用字符数)
         """
-        # 1. 遍历
+        if not retrieval_context:
+            return "", max_chars
+
         formatted_lines = []
-        usage = 0
-        for index, context in enumerate(retrieval_context, 1):
-            """
-            context格式:
-            {
-                'content': content,
-                'chunk_id': chunk_id,
-                'title': title,
-                'url': url,
-                'source': source,
-            }
-            """
-            content = context.get('content', "")
+        used_chars = 0
+
+        for idx, doc in enumerate(retrieval_context, 1):
+            content = doc.get('content', '')
             if not content:
                 continue
 
-            metadata_content = [f'文档{index}']
+            # 构建元数据字符串
+            metadata_parts = [f'[文档{idx}]']
 
-            #定义元数据模板
-            for meta_field, template in [
-                                            ('chunk_id', '[chunk_id={}]'),
-                                            ('title', '[title={}]'),
-                                            ('source', '[source={}]'),
-                                            ('url', '[url={}]'),
-                                        ]:
-                field_value = str(context.get(meta_field, "")).strip()
-                if field_value:
-                    metadata_content.append(template.format(field_value))
-            doc_score = context.get('score')
-            if doc_score is not None:
-                metadata_content.append(f'[score={doc_score:.6f}]')
+            book_name = doc.get('book_name', '')
+            if book_name:
+                metadata_parts.append(f'[书名: {book_name}]')
 
-            formatted_line = ' '.join(metadata_content) + '\n' + content
+            content_type = doc.get('content_type', '')
+            if content_type:
+                metadata_parts.append(f'[类型: {content_type}]')
 
-            sep_chars = 2 if formatted_lines else 0
+            author_name = doc.get('author_name', '')
+            if author_name:
+                metadata_parts.append(f'[作者: {author_name}]')
 
-            total_length = sep_chars + len(formatted_line)
-
-            #计算当前总长度+之前使用了的长度是否大于最大上下文长度
-            if total_length + usage > max_context_chars:
-                break
+            source = doc.get('source', '')
+            if source == 'web':
+                url = doc.get('url', '')
+                if url:
+                    metadata_parts.append(f'[来源: {url}]')
             else:
-                formatted_lines.append(formatted_line)
-                usage += total_length #检索到的上下文总的长度
-        return '\n\n'.join(formatted_lines), max_context_chars - usage
+                source_file = doc.get('source_file', '')
+                if source_file:
+                    metadata_parts.append(f'[来源: {source_file}]')
 
-    def _push_exist_answer(self, task_id: str, is_stream: bool, state: QueryGraphState):
+            score = doc.get('score')
+            if score is not None:
+                metadata_parts.append(f'[相关度: {score:.3f}]')
+
+            metadata_str = ' '.join(metadata_parts)
+            formatted_line = f"{metadata_str}\n{content}"
+
+            total_length = len(formatted_line) + 2  # +2 for double newline
+
+            if used_chars + total_length > max_chars:
+                break
+
+            formatted_lines.append(formatted_line)
+            used_chars += total_length
+
+        result = '\n\n'.join(formatted_lines)
+        remaining_chars = max_chars - used_chars
+
+        return result, remaining_chars
+
+    def _push_existing_answer(self, task_id: str, is_stream: bool, state: QueryGraphState) -> None:
+        """
+        推送已有的答案（非LLM生成的预置答案）
+        Args:
+            task_id: 任务ID
+            is_stream: 是否流式
+            state: 状态对象
+        """
         if not is_stream:
-            set_task_result(task_id=task_id, key="answer", value=state['answer'])
+            set_task_result(task_id=task_id, key="answer", value=state.get('answer', ''))
+
+
+if __name__ == '__main__':
+    # 测试代码（config 由 BaseNode 自动提供）
+    node = AnswerOutPutNode()
+
+    # 模拟测试数据
+    mock_state = {
+        "original_query": "《活着》讲什么",
+        "rewritten_query": "《活着》这本书主要讲了什么内容？",
+        "book_names": ["活着"],
+        "intent": "detail",
+        "is_stream": False,
+        "task_id": "test_001",
+        "session_id": "session_001",
+        "reranked_docs": [
+            {
+                "content": "《活着》通过主人公福贵一生的遭遇，书写普通人如何在一次次失去中继续活下去。",
+                "book_name": "活着",
+                "content_type": "书籍简介",
+                "author_name": "余华",
+                "source": "local",
+                "source_file": "活着_简介.md",
+                "score": 0.85
+            },
+            {
+                "content": "余华是中国当代重要作家之一，其作品语言简洁但情感力量很强。",
+                "book_name": "活着",
+                "content_type": "作者介绍",
+                "author_name": "余华",
+                "source": "local",
+                "source_file": "活着_作者介绍.md",
+                "score": 0.75
+            }
+        ],
+        "history": []
+    }
+
+    result = node.process(mock_state)
+

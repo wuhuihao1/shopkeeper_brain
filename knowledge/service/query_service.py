@@ -1,8 +1,7 @@
-import uuid, logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import uuid
+import logging
+from typing import List, Dict, Any
 
-from typing import List,Dict,Any
 from knowledge.processor.query_processor.main_graph import query_app
 from knowledge.utils.task_util import update_task_status, TASK_STATUS_PROCESSING, TASK_STATUS_FAILED, \
     TASK_STATUS_COMPLETED
@@ -12,12 +11,16 @@ from knowledge.utils.mongo_history_util import clear_history
 from knowledge.utils.mongo_history_util import list_sessions as db_list_sessions
 from knowledge.utils.mongo_history_util import delete_session as db_delete_session
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 class QueryService:
     @staticmethod
     def generate_session_id():
         """生成session_id"""
         return str(uuid.uuid4())
+
     @staticmethod
     def generate_task_id():
         """生成task_id"""
@@ -26,18 +29,17 @@ class QueryService:
     def run_query_graph(self, session_id: str, task_id: str, query: str, is_stream: bool,
                         enable_evaluation: bool = False, ground_truth: str = ""):
         """
-        运行查询流程的pineline
+        运行查询流程的pipeline（听书平台版本）
         Args:
-            session_id:  会话id
-            task_id:     任务id
-            query:       查询问题
-            is_stream:   是否是流式
+            session_id: 会话id
+            task_id: 任务id
+            query: 查询问题
+            is_stream: 是否是流式
             enable_evaluation: 是否开启 RAGAS 评估
-            ground_truth: 可选标准答案（用于 Context Precision/Recall 指标）
+            ground_truth: 可选标准答案
         """
-        #更新节点流程
         update_task_status(task_id=task_id, status_name=TASK_STATUS_PROCESSING)
-        #节点初始化
+
         query_init_state = {
             "session_id": session_id,
             "task_id": task_id,
@@ -59,6 +61,7 @@ class QueryService:
         return answer
 
     def get_history(self, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """获取历史对话（听书平台版本）"""
         records = get_recent_messages(session_id=session_id, limit=limit)
         return [
             {
@@ -67,11 +70,13 @@ class QueryService:
                 "role": r.get("role"),
                 "text": r.get("text"),
                 "rewritten_query": r.get("rewritten_query"),
-                "item_names": r.get("item_names", []),
+                "book_names": r.get("book_names", []),  # 改为 book_names
+                "intent": r.get("intent", ""),  # 新增意图字段
                 "ts": r.get("ts"),
             }
             for r in records
         ]
+
     def clear_history(self, session_id: str) -> int:
         return clear_history(session_id)
 

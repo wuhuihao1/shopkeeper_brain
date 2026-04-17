@@ -1,161 +1,145 @@
-"""查询流程主图
+"""查询流程主图（听书平台版本）
 
 使用 LangGraph 构建知识库查询工作流。
 """
-
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
+from pathlib import Path
 from dotenv import load_dotenv
+from knowledge.dictionary.query_file import IntentType
 from knowledge.processor.query_processor.state import QueryGraphState
-from knowledge.processor.query_processor.nodes.item_name_confirmed_node import ItemNameConfirmedNode
-from knowledge.processor.query_processor.nodes.hybrid_vector_search_node import HybridVectorSearch
+from knowledge.processor.query_processor.nodes.intent_router_node import IntentRouterNode
+from knowledge.processor.query_processor.nodes.book_name_confirmed_node import BookNameConfirmedNode
+from knowledge.processor.query_processor.nodes.metadata_filter_node import MetadataFilterNode
+from knowledge.processor.query_processor.nodes.hybrid_vector_search_node import HybridVectorSearchNode
 from knowledge.processor.query_processor.nodes.hyde_vector_search_node import HyDeVectorSearchNode
 from knowledge.processor.query_processor.nodes.web_mcp_search_node import WebMcpSearchNode
 from knowledge.processor.query_processor.nodes.rrf_merge_node import RrfMergeNode
 from knowledge.processor.query_processor.nodes.reranker_node import RerankerNode
 from knowledge.processor.query_processor.nodes.answer_output_node import AnswerOutPutNode
-from knowledge.processor.query_processor.nodes.evaluation_node import EvaluationNode
 
-# 加载环境变量
-load_dotenv()
+# 显式指定 .env 路径，避免加载到其他项目的配置
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+load_dotenv(_env_path, override=True)
 
 
-def route_after_item_confirm(state: QueryGraphState) -> bool:
-    """商品名称确认后的路由逻辑。
+def route_after_intent(state: QueryGraphState) -> str:
+    intent = state.get('intent', IntentType.QA)
+    # 直接与枚举比较
+    if intent == IntentType.CHAT:
+        return "skip_search"
 
-    根据是否已有答案决定是否跳过搜索直接输出。
+    if intent == IntentType.RECOMMEND:
+        return "skip_book_confirm"
 
-    Args:
-        state: 查询图状态。
+    return "need_book_confirm"
 
-    Returns:
-        True 表示已有答案需要跳过搜索，False 表示继续搜索流程。
+
+def route_after_book_confirm(state: QueryGraphState) -> str:
     """
+    书名确认后的路由逻辑
+    """
+    # 如果有预置答案，直接输出
     if state.get("answer"):
-        return True
-    return False
+        return "has_answer"
+
+    # 有确认的书名，继续检索
+    if state.get("book_names"):
+        return "has_book_names"
+
+    # 无结果，直接输出
+    return "no_result"
 
 
-def route_after_answer(state: QueryGraphState) -> str:
-    """答案输出后的路由逻辑。
-
-    根据 enable_evaluation 决定是否进入 RAGAS 评估节点。
-
-    Args:
-        state: 查询图状态。
-
-    Returns:
-        "evaluation_node" 或 "END"。
+def route_after_merge(state: QueryGraphState) -> str:
     """
-    if state.get("enable_evaluation"):
-        return "evaluation_node"
-    return "END"
+    结果融合后的路由逻辑
+    """
+    rrf_chunks = state.get('rrf_chunks', [])
+    if rrf_chunks:
+        return "has_results"
+    return "no_results"
 
 
 def create_query_graph() -> CompiledStateGraph:
-    """创建查询流程图。
+    """创建查询流程图"""
+    workflow = StateGraph(QueryGraphState)
 
-    Returns:
-        编译后的 StateGraph 实例。
+    # 实例化节点
+    intent_router_node = IntentRouterNode()
+    book_name_confirmed = BookNameConfirmedNode()
+    metadata_filter = MetadataFilterNode()
+    hybrid_search = HybridVectorSearchNode()
+    hyde_search = HyDeVectorSearchNode()
+    web_search = WebMcpSearchNode()
+    rrf_merge = RrfMergeNode()
+    reranker = RerankerNode()
+    answer_output = AnswerOutPutNode()
 
-    流程结构::
+    # 添加节点
+    workflow.add_node("intent_router_node", intent_router_node)
+    workflow.add_node("book_name_confirmed_node", book_name_confirmed)
+    workflow.add_node("metadata_filter_node", metadata_filter)
+    workflow.add_node("hybrid_search_node", hybrid_search)
+    workflow.add_node("hyde_search_node", hyde_search)
+    workflow.add_node("web_search_node", web_search)
+    workflow.add_node("join", lambda x: x)
+    workflow.add_node("rrf_merge_node", rrf_merge)
+    workflow.add_node("reranker_node", reranker)
+    workflow.add_node("answer_output_node", answer_output)
 
-        item_name_confirm
-              │
-              ├── (有答案) ──────────────────────────> answer_output
-              │                                            │
-              └── (无答案)                                  │
-                   │                                       │
-                   v                                       │
-              multi_search                                 │
-                   │                                       │
-             ┌─────┼──────────┐                            │
-             │     │          │                            │
-             v     v          v                            │
-        embedding  hyde    web_mcp                         │
-             │     │          │                            │
-             └─────┼──────────┘                            │
-                   │                                       │
-                   v                                       │
-                 join                                      │
-                   │                                       │
-                   v                                       │
-                  rrf                                      │
-                   │                                       │
-                   v                                       │
-                rerank                                     │
-                   │                                       │
-                   v                                       │
-             answer_output <───────────────────────────────┘
-                   │
-                   ├── (enable_evaluation=True) ──> evaluation_node ──> END
-                   │
-                   └── (enable_evaluation=False) ──────────> END
-    """
+    # 设置入口点
+    workflow.set_entry_point("intent_router_node")
 
-    # 1. 定义LangGraph工作流
-    workflow = StateGraph(QueryGraphState)  # type:ignore
-
-    # 2. 实例化节点
-    nodes = {
-        "item_name_confirmed_node": ItemNameConfirmedNode(),
-        "multi_search": lambda x: x,  # 虚拟节点
-        "hybrid_vector_search_node": HybridVectorSearch(),
-        "hyde_vector_search_node": HyDeVectorSearchNode(),
-        "web_mcp_search_node": WebMcpSearchNode(),
-        "join": lambda x: x,  # 多路搜索汇合（虚节点）
-        "rrf_merge_node": RrfMergeNode(),
-        "reranker_node": RerankerNode(),
-        "answer_output_node": AnswerOutPutNode(),
-        "evaluation_node": EvaluationNode(),  # RAGAS 评估节点
-    }
-
-    # 3. 添加节点
-    for name, node in nodes.items():
-        workflow.add_node(name, node)  # type:ignore
-
-    # 4. 设置入口点
-    workflow.set_entry_point("item_name_confirmed_node")
-
-    # 5. 添加条件边：商品名称确认后根据是否有答案路由
+    # 意图识别后的条件边
     workflow.add_conditional_edges(
-        "item_name_confirmed_node",
-        route_after_item_confirm,
+        "intent_router_node",
+        route_after_intent,
         {
-            False: "multi_search",
-            True: "answer_output_node",
+            "skip_search": "answer_output_node",  # 闲聊直接输出
+            "skip_book_confirm": "metadata_filter_node",  # 推荐直接走过滤
+            "need_book_confirm": "book_name_confirmed_node",  # 其他需要确认书名
         },
     )
 
-    # 6. 多路搜索分发（并行执行）
-    workflow.add_edge("multi_search", "hybrid_vector_search_node")
-    workflow.add_edge("multi_search", "hyde_vector_search_node")
-    workflow.add_edge("multi_search", "web_mcp_search_node")
+    # 书名确认后的条件边
+    workflow.add_conditional_edges(
+        "book_name_confirmed_node",
+        route_after_book_confirm,
+        {
+            "has_answer": "answer_output_node",
+            "has_book_names": "metadata_filter_node",
+            "no_result": "answer_output_node",
+        },
+    )
 
-    # 7. 多路搜索汇合
-    workflow.add_edge("hybrid_vector_search_node", "join")
-    workflow.add_edge("hyde_vector_search_node", "join")
-    workflow.add_edge("web_mcp_search_node", "join")
+    # 元数据过滤后，进入多路检索
+    workflow.add_edge("metadata_filter_node", "hybrid_search_node")
+    workflow.add_edge("metadata_filter_node", "hyde_search_node")
+    workflow.add_edge("metadata_filter_node", "web_search_node")
 
-    # 8. 顺序边
+    # 多路检索汇合到join节点
+    workflow.add_edge("hybrid_search_node", "join")
+    workflow.add_edge("hyde_search_node", "join")
+    workflow.add_edge("web_search_node", "join")
+
+    # join后进入RRF融合
     workflow.add_edge("join", "rrf_merge_node")
-    workflow.add_edge("rrf_merge_node", "reranker_node")
-    workflow.add_edge("reranker_node", "answer_output_node")
 
-    # 9. 答案输出后条件路由：根据 enable_evaluation 决定是否进入评估节点
+    # RRF融合后条件边
     workflow.add_conditional_edges(
-        "answer_output_node",
-        route_after_answer,
+        "rrf_merge_node",
+        route_after_merge,
         {
-            "evaluation_node": "evaluation_node",
-            "END": END,
+            "has_results": "reranker_node",
+            "no_results": "answer_output_node",
         },
     )
 
-    # 10. 评估节点结束后到终点
-    workflow.add_edge("evaluation_node", END)
+    # 重排序后输出答案
+    workflow.add_edge("reranker_node", "answer_output_node")
+    workflow.add_edge("answer_output_node", END)
 
-    # 11. 返回可运行的状态
     return workflow.compile()
 
 
@@ -164,47 +148,63 @@ query_app = create_query_graph()
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("开始测试: 查询流程主图 (main_graph)")
+    print("开始测试: 查询流程主图（听书平台版本）")
     print("=" * 60)
 
-    # ---- 测试场景 1：商品名明确，走完整 pipeline ----
-    print("\n【场景 1】: 商品名明确，走完整 pipeline")
+    # 测试场景 1：书籍详情查询
+    print("\n【场景 1】: 书籍详情查询")
     print("-" * 60)
 
     mock_state_1 = {
-        "original_query": "RS-12 数字万用表如何使用？",
-        "session_id": "test_session_main_graph",
+        "original_query": "《活着》这本书讲什么？",
+        "session_id": "test_session_001",
         "task_id": "test_task_001",
         "is_stream": False,
     }
 
     result_1 = query_app.invoke(mock_state_1)
 
-    print(f"\n  【结果】:")
-    print(f"  商品名: {result_1.get('item_names')}")
-    print(f"  重写查询: {result_1.get('rewritten_query')}")
+    print(f"\n查询: {mock_state_1['original_query']}")
+    print(f"意图: {result_1.get('intent')}")
+    print(f"书名: {result_1.get('book_names')}")
     answer_1 = result_1.get("answer", "")
-    print(f"  答案: {answer_1[:200]}..." if len(answer_1) > 200 else f"  答案: {answer_1}")
+    print(f"答案: {answer_1[:300]}..." if len(answer_1) > 300 else f"答案: {answer_1}")
 
-    # ---- 测试场景 2：商品名模糊，被拦截 ----
-    # print("\n\n【场景 2】: 商品名模糊，被拦截返回选项")
-    # print("-" * 60)
-    #
-    # mock_state_2 = {
-    #     "original_query": "万用表怎么测电压？",
-    #     "session_id": "test_session_main_graph",
-    #     "task_id": "test_task_002",
-    #     "is_stream": False,
-    # }
-    #
-    # print(f"  查询: {mock_state_2['original_query']}")
-    #
-    # result_2 = query_app.invoke(mock_state_2)
-    #
-    # print(f"\n  【结果】:")
-    # print(f"  商品名: {result_2.get('item_names')}")
-    # answer_2 = result_2.get("answer", "")
-    # print(f"  答案: {answer_2}")
+    # 测试场景 2：书籍推荐
+    print("\n\n【场景 2】: 书籍推荐")
+    print("-" * 60)
+
+    mock_state_2 = {
+        "original_query": "推荐几本好看的科幻小说",
+        "session_id": "test_session_002",
+        "task_id": "test_task_002",
+        "is_stream": False,
+    }
+
+    result_2 = query_app.invoke(mock_state_2)
+
+    print(f"\n查询: {mock_state_2['original_query']}")
+    print(f"意图: {result_2.get('intent')}")
+    answer_2 = result_2.get("answer", "")
+    print(f"答案: {answer_2[:300]}..." if len(answer_2) > 300 else f"答案: {answer_2}")
+
+    # 测试场景 3：闲聊
+    print("\n\n【场景 3】: 闲聊")
+    print("-" * 60)
+
+    mock_state_3 = {
+        "original_query": "你好",
+        "session_id": "test_session_003",
+        "task_id": "test_task_003",
+        "is_stream": False,
+    }
+
+    result_3 = query_app.invoke(mock_state_3)
+
+    print(f"\n查询: {mock_state_3['original_query']}")
+    print(f"意图: {result_3.get('intent')}")
+    answer_3 = result_3.get("answer", "")
+    print(f"答案: {answer_3}")
 
     print("\n" + "=" * 60)
     print("全部测试完成")
