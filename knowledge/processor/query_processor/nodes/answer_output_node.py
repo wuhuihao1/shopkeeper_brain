@@ -3,7 +3,7 @@ from langchain_openai import ChatOpenAI
 from knowledge.processor.query_processor.base import BaseNode
 from knowledge.processor.query_processor.state import QueryGraphState
 from knowledge.utils.client.ai_clients import AIClients
-from knowledge.utils.mongo_history_util import save_chat_message
+from knowledge.utils.mongo_history_util import save_chat_message, get_recent_messages_ordered
 from knowledge.utils.task_util import set_task_result
 from knowledge.utils.sse_util import push_sse_event, SSEEvent
 from knowledge.prompts.query_prompt import ANSWER_PROMPT_BOOK
@@ -25,6 +25,7 @@ class AnswerOutPutNode(BaseNode):
         task_id = state.get('task_id', '')
 
         # 判断是否有预置答案
+        print('answer', state.get('answer'))
         if state.get('answer'):
             # 有预置答案（如书名无法确认），直接返回
             self._push_existing_answer(task_id, is_stream, state)
@@ -79,6 +80,7 @@ class AnswerOutPutNode(BaseNode):
                 rewritten_query=rewritten_query,
                 book_names=book_names,
             )
+            self.logger.info(f"[DEBUG] 保存用户消息到MongoDB - session_id: {session_id}, query: {original_query[:50]}")
 
             # 保存助手回答
             save_chat_message(
@@ -88,7 +90,7 @@ class AnswerOutPutNode(BaseNode):
                 rewritten_query=rewritten_query,
                 book_names=book_names,
             )
-            self.logger.info(f"对话历史保存成功，session_id: {session_id}")
+            self.logger.info(f"[DEBUG] 保存助手回复到MongoDB - session_id: {session_id}, answer: {answer[:50]}")
         except Exception as e:
             self.logger.error(f"保存历史对话到MongoDB失败: {str(e)}")
 
@@ -192,7 +194,15 @@ class AnswerOutPutNode(BaseNode):
 
         # 构建历史对话上下文
         chat_history = state.get('history', []) or []
+        # 如果 history 为空（某些路由路径跳过了 book_name_confirmed_node），自行获取
+        if not chat_history:
+            session_id = state.get('session_id', '')
+            if session_id:
+                chat_history = get_recent_messages_ordered(session_id=session_id, limit=10)
+            else:
+                self.logger.warning("[DEBUG] session_id 为空，无法获取历史记录")
         formatted_history = self._format_chat_history(chat_history, remaining_chars)
+        self.logger.info(f"[DEBUG] 格式化后的历史: {formatted_history[:200] if formatted_history else '(空)'}")
 
         # 根据意图调整Prompt风格
         intent_hint = self._get_intent_hint(intent)

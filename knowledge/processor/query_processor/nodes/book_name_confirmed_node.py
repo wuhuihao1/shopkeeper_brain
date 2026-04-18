@@ -337,7 +337,6 @@ class BookNameConfirmedNode(BaseNode):
 
         # 5. 决策并更新state
         self._decide(confirmed, options, state, rewritten_query)
-
         # 6. 保存历史
         state['history'] = history_context
 
